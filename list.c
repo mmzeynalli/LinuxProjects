@@ -5,6 +5,7 @@
 #include <malloc.h>
 #include <ctype.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
 #include <errno.h>
 #include <time.h>
@@ -21,8 +22,12 @@
 #define COLOR_CYAN "\x1b[1;96m" // color for links
 #define COLOR_BACKG_RED "\x1b[0;41m"
 #define COLOR_RESET "\x1b[0m" // reset color settings
+#define COLOR_PURPLE "\x1b[0;35m"
+#define COLOR_BACKG_YELLOW "\x1b[0;43m"
+
 
 #define SIZE 10000
+#define TABSIZE 8
 /* END OF DEFINES */
 
 /* STRUCTURES */
@@ -58,7 +63,6 @@ typedef struct
   int show_hidden;
   int show_inode;
   int show_idNumbers;
-  int show_inDIR;
   int show_Recursive;
   int show_insideOfDir;
   int show_CUR_PREV_DIR;
@@ -84,17 +88,22 @@ typedef struct
 
 /* GLOBAL VARIABLES */
 
-DIR* dir;
-struct dirent* file;
-struct stat st; 
-struct tm Date;
+DIR* dir; //pointer for reading directory
+struct dirent* file; // struct for getting file data
+struct stat st; // struct for getting stats of file
+struct tm Date; // struct for storing time
 struct group* grp;
 struct passwd* pwd;
+struct winsize w; // struct for getting window stats
 
 int i; // for loop iterator
 int j = 0; // iterator for dirsAndFiles array of strings
 int cnt = 0; // count of files in directory
 char* dirsAndFiles[SIZE]; // list of non-option of argv
+int maxNameSize = -1;
+float winSize;
+int cols;
+int rows;
 
 Options op;
 fileInfo *entry;
@@ -103,19 +112,23 @@ fileInfo *entry;
 
 /* FUNCTION PROTOTYPES */
 
-void ls(); // lists all in the current directory
+void ls(char* path); // lists all in the given directory
+void recursiveLS(char* path); // recursively list all directories
 void initOptions(char* str); // initialize arguments
 void initStruct(); // initializes Options struct
 void storeFileInfo(); // store filenames in buffer and sort them
 void sort(); // sort according to given options
-void printAll(); // print file list with given options
+void printDir(); // print file list with given options
+void printInCols(); // output is per line
+void printInLine(); // output is formatted in columns
 
-int getNumOfFilesInDIR(); // number of files in current directory
+int getNumOfFilesInDIR(char* path); // number of files in current directory
 int getNumOfHLinks(); // returns the number of hard links
 int get_iNode(char* file); // finds i-node of file
 int get_aTime(char* file); // access time
 int get_cTime(char* file); // status change time
 int get_mTime(char* file); // modification time
+off_t getSize(char* file); // get size of the file
 int getUserID(char* file); // id of user
 int getGroupID(char* file); // id of group
 char getExtension(char* COLOR); // depending on permission, prints extension
@@ -143,29 +156,31 @@ int main(int argc, char** argv)
   }
 
   initStruct();
- 
-  dirsAndFiles[0] = DIR_CUR; // by default non-optional argument is current directory
+  ioctl(0, TIOCGWINSZ, &w);
+  
+  winSize = w.ws_col;
 
   for (i = 1; i < argc; i++)
   {
     if(argv[i][0] == '-') initOptions(argv[i]);
-    else dirsAndFiles[j++] = argv[i];
+    //else dirsAndFiles[j++] = argv[i];
   }
 
-  if(!op.show_Recursive) ls();
-
+  if (!j)
+    dirsAndFiles[j++] = DIR_CUR; // by default non-optional argument is current directory
   
+
+  if(!op.show_Recursive) ls(DIR_CUR);
+  else recursiveLS(DIR_CUR);
 
 //---------------------------------------
     // Date = gmtime(&entry[i].mtime);
     // Date->tm_hour;
   
   closedir(dir);
-  free(entry);
+ // free(entry);
 
   exit(0);
-  
-//---------------------------------------
   
 }
 
@@ -176,7 +191,6 @@ void initStruct()
   op.show_hidden = 0;
   op.show_inode = 0;
   op.show_idNumbers = 0;
-  op.show_inDIR = 1;
   op.show_Recursive = 0;
   op.show_insideOfDir = 1;
   op.show_CUR_PREV_DIR = 0;
@@ -205,20 +219,21 @@ void initOptions(char* str)
     switch(str[i])
     {
       case 'A': op.show_hidden = 1;
-		op.show_CUR_PREV_DIR = 0; 
+		if(!op.show_CUR_PREV_DIR) op.show_CUR_PREV_DIR = 0; 
 		break;
       case 'a': op.show_hidden = 1; 
 		op.show_CUR_PREV_DIR = 1;
 		break;
-//      case 'C': op.show_multiCol = 0;
-//		op.show_perLine = 0;
-//		break;
+      case 'C': op.show_multiCol = 1;
+		op.show_perLine = 0;
+		break;
       case 'c': op.sort_ctime = 1;
 		op.sort_size = 0;
 		op.sort_mtime = 0;
 		op.sort_atime = 0;
 		break;
-      case 'd': op.show_insideOfDir = 0; 
+      case 'd': op.show_insideOfDir = 0;
+                op.show_Recursive = 0;
 		break;
       case 'F': op.show_extensions = 1; 
 		break;
@@ -243,7 +258,7 @@ void initOptions(char* str)
 		op.show_perLine = 1;
 		op.show_multiCol = 0;
 		break;
-      case 'R': op.show_Recursive = 1;
+      case 'R': if(op.show_insideOfDir) op.show_Recursive = 1; //if d flag is on, no recursive happens
 		break;
       case 'r': op.sort_reverse = 1;
 		break;
@@ -265,62 +280,83 @@ void initOptions(char* str)
 		op.sort_mtime = 0;
 		op.sort_ctime = 0;
 		break;
-//      case 'x': op.show_multiCol = 0;
-//		op.show_perLine = 0;
-//		break;
-        case '1': op.show_perLine = 1;
+      case 'x': op.show_multiCol = 0;
+		op.show_perLine = 0;
+		break;
+      case '1': op.show_perLine = 1;
 		op.show_multiCol = 0;
 		break;
-
     }
   }
 }
 
-void ls()
+void ls(char* path)
 {
-  for(i = 0; i < j; i++)
-  {
-    cnt = getNumOfFilesInDIR();
+  if(op.show_insideOfDir)
+    cnt = getNumOfFilesInDIR(path);
 
-    entry = calloc(cnt, sizeof(*entry));
+  entry = calloc(cnt, sizeof(*entry));
   
-    storeFileInfo();
+  storeFileInfo();
 
-    sort();
+  sort();
   
-    printAll();
-  }
+  printDir();
+
+  //free(entry);
+  //cnt = 0;
+  
+}
+
+void recursiveLS(char* path)
+{
+  printf("%s:\n", path);
+  ls(path);
+  
+  for(i = 0; i < cnt; i++)
+    if(entry[i].isDir) recursiveLS(entry[i].name);
 }
 
 void storeFileInfo()
 {
 
-  i = 0;
+  int in = 0;
+  char* name;
 
   while((file = readdir(dir)) != NULL)
   {
-    char* name = file->d_name;
+    name = file->d_name;
 
-    entry[i].name = name;
+    if ((!strcmp(name, DIR_CUR) || !strcmp(name, DIR_PREV)) && !op.show_CUR_PREV_DIR) continue;
+    if(isHidden(name) && !op.show_hidden) continue;
+      
+    entry[in].name = name;
+     
+
+    if(maxNameSize < (int)(strlen(name))) maxNameSize = (int)strlen(name);
+
+    entry[in].permission = getPermission(name);
     
-    entry[i].permission = getPermission(name);
-    if(entry[i].permission[0] == 'd') entry[i].isDir = 1;
+    if(entry[in].permission[0] == 'd') entry[in].isDir = 1;
+    else entry[in].isDir = 0;
 
-    entry[i].color = getColor(name);
-    entry[i].exe = getExtension(getColor(name));
-    entry[i].atime = get_aTime(name);
-    entry[i].ctime = get_cTime(name);
-    entry[i].mtime = get_mTime(name);
-    entry[i].nlink = getNumOfHLinks(name);
-    entry[i].userID = getUserID(name);
-    entry[i].groupID = getGroupID(name);
-    entry[i].userName = getUserName(name);
-    entry[i].groupName = getGroupName(name);
-    entry[i].inode = get_iNode(name);
+    entry[in].color = getColor(name);
+    entry[in].exe = getExtension(getColor(name));
+    entry[in].atime = get_aTime(name);
+    entry[in].ctime = get_cTime(name);
+    entry[in].mtime = get_mTime(name);
+    entry[in].size = getSize(name);
+    entry[in].nlink = getNumOfHLinks(name);
+    entry[in].userID = getUserID(name);
+    entry[in].groupID = getGroupID(name);
+    entry[in].userName = getUserName(name);
+    entry[in].groupName = getGroupName(name);
+    entry[in].inode = get_iNode(name);
 
-    i++;
+    
+
+    in++;
   }
-
 }
 
 void sort()
@@ -333,12 +369,25 @@ void sort()
   }
 }
 
-void printAll()
+void printDir()
+{
+  if(op.show_perLine)
+    printInLine();
+  if(op.show_multiCol)
+    printInCols();
+  
+  printf("\n");
+
+  if(op.show_Recursive) printf("\n"); 
+}
+
+void printInLine()
 {
   for(i = 0; i < cnt; i++)
   {
-    if (isHidden(entry[i].name) && !op.show_hidden) continue;
-    if ((!strcmp(entry[i].name, DIR_CUR) || !strcmp(entry[i].name, DIR_PREV)) && !op.show_CUR_PREV_DIR) continue;
+
+    printf("%d\t", entry[i].isDir);
+    
     if (op.show_inode) printf("%d ", entry[i].inode);
 
     if (op.show_longList)
@@ -346,28 +395,74 @@ void printAll()
       printf("%s %d ", entry[i].permission, entry[i].nlink);
 
       if(op.show_idNumbers) printf("%d %d ", entry[i].userID, entry[i].groupID);
-      else printf("%s %s", entry[i].userName, entry[i].groupName);
+      else printf("%s %s ", entry[i].userName, entry[i].groupName);
 
-      printf("%lu ", entry[i].size);
+      printf("%6lu ", entry[i].size);
+
+    }
+    
+    if(op.show_color)
+    {
+      printf("%s", entry[i].color);
+    }
+    
+    printf("%s%s", entry[i].name, COLOR_RESET);
+    
+    //no need to put new line in the last entry, as I do that in the end of print function
+    if((i != cnt - 1) && op.show_perLine) printf("\n");
+  }
+}
+
+void printInCols()
+{
+
+  int col_width = ((maxNameSize + TABSIZE - 1) / TABSIZE) * TABSIZE;
+  cols = winSize / col_width;
+  rows = (cnt + cols - 1) / cols;
+  int index;
+  
+  int nTabs;
+  
+  for (int r = 0; r < rows; r++)
+  {
+    for (int c = 0; c < cols; c++)
+    {
+      // formula for finding the number of file to print
+      index = c * rows + r;
+      if (index >= cnt) continue;
 
       if(op.show_color)
       {
-	printf("%s", entry[i].color);
+        printf("%s", entry[index].color);
       }
+    
+      printf("%s%s", entry[index].name, COLOR_RESET);
 
-      printf("%s%s", entry[i].name, COLOR_RESET);
+      int len = strlen(entry[index].name);
+ 	  
+      nTabs = (col_width - len + TABSIZE - 1) / TABSIZE;
+
+      while(nTabs--) putchar('\t');
     }
+	
+    printf("\n");
   }
 }
+
 /* GET FUNCTIONS */
 
-int getNumOfFilesInDIR()
+int getNumOfFilesInDIR(char* path)
 {
   int n = 0;
-  dir = opendir(DIR_CUR);
+  dir = opendir(path);
   
   while((file = readdir(dir)) != NULL)
   { 
+    if ((!strcmp(file->d_name, DIR_CUR) || !strcmp(file->d_name, DIR_PREV)) && !op.show_CUR_PREV_DIR) 
+      continue;
+
+    if (isHidden(file->d_name) && !op.show_hidden) continue; 
+    
     n++;
   }
 
@@ -434,24 +529,20 @@ char* getPermission(char* file)
 char* getColor(char *file)
 {
 
-  if(lstat(file, &st) == 0)
-  {
-    mode_t perm = st.st_mode;
+  char* p = getPermission(file);
 
-    switch(perm & S_IFMT)
-    {
-      case S_IFLNK: return COLOR_CYAN;
-      case S_IFDIR: return COLOR_LIGHT_BLUE;
-      case S_IFSOCK: return COLOR_BACKG_RED;
-      case S_IFREG: return COLOR_RESET;
-    }
+  switch(p[0])
+  {
+    case 'l': return COLOR_CYAN;
+    case 'd': return COLOR_LIGHT_BLUE;
+    case 's': return COLOR_PURPLE;
   }
-
-  else
-  {
-    perror("Could not get permissions of file");
-    return strerror(errno);
-  }   
+  if(p[3] == 's') return COLOR_BACKG_RED;
+  if(p[6] == 's') return COLOR_BACKG_YELLOW;
+  
+  if(p[3] == 'x') return COLOR_GREEN;
+  
+  return COLOR_RESET;
 }
 
 int getUserID(char* file)
@@ -502,12 +593,21 @@ int get_mTime(char *file)
   exit(1);
 }
 
+off_t getSize(char* file)
+{
+  if(lstat(file, &st) == 0) return st.st_size;
+
+  perror("Could not get size of the file");
+  exit(1);
+}
+
 char getExtension(char* COLOR)
 {
-  if(COLOR == COLOR_GREEN) return '*';    	  
-  else if(COLOR == COLOR_LIGHT_BLUE) return '/';
-  else if(COLOR == COLOR_CYAN) return '@';
-
+  if (COLOR == COLOR_GREEN) return '*';    	  
+  else if (COLOR == COLOR_LIGHT_BLUE) return '/';
+  else if (COLOR == COLOR_CYAN) return '@';
+  else if (COLOR == COLOR_PURPLE) return '=';
+  else ' ';
 }
 
 char* getGroupName(char* file)

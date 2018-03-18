@@ -1,0 +1,29 @@
+#!/bin/bash
+
+#We must change mode and give permissions to this file
+#chmod 755 directories
+
+username=$(whoami | awk '{print $1}')
+
+#Create files
+touch rootprocesses-1
+touch rootprocesses-2
+touch myprocesses-1
+touch myprocesses-2
+
+#Give permission for each of them
+chmod 755 rootprocesses-1
+chmod 755 rootprocesses-2
+chmod 755 myprocesses-1
+chmod 755 myprocesses-2
+
+#Insert data into it
+ps -aux | grep root > rootprocesses-1
+ps -aux | grep username > myprocesses-1
+
+
+sudo shutdown -r now
+
+ps -aux | grep root > rootprocesses-2
+ps -aux | grep username > myprocesses-2
+

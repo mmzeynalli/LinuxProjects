@@ -1,0 +1,49 @@
+#!/bin/bash
+
+#create new file
+touch out
+
+#giving permission
+chmod 755 out
+
+df>out #storing output to txt file
+
+#count number of lines
+line=$(wc -l out | awk '{print $1}')
+
+total=0
+ava=0
+used=0
+avause=0
+i=2
+
+#calculate the data
+for i in {2..line}
+do
+awk '{total+= $2} END {print "TOTAL: " total}' out
+awk '{used+= $3} END {print "USED: " used}' out
+awk '{ava+= $4} END {print "AVAILABLE: " ava}' out
+awk '{avause+= ($3 + $4)} END {print "USED&AVAILABLE: " avause}' out
+done
+
+echo
+
+#for i-nodes
+df -i>out
+
+total=0
+ava=0
+used=0
+avause=0
+i=2
+
+#calculating for i-nodes
+for i in {2..line}
+do
+awk '{total+= $2} END {print "TOTAL I-NODE: " total}' out
+awk '{used+= $3} END {print "USED I-NODE: " used}' out
+awk '{ava+= $4} END {print "AVAILABLE I-NODE: " ava}' out
+awk '{avause+= ($3 + $4)} END {print "USED&AVAILABLE I-NODE: " avause}' out
+done
+
+

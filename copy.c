@@ -22,8 +22,6 @@ int main(int argc, char **argv)
 
   if(dest[0] != '/') dest = createAbsPath(dest); //Segmentation Fault, work on "mkdirs" command
 
-  //printf("%s\n", dest);
-
   int fdold = open(filename, O_RDONLY);
   int fdnew = creat(dest, S_IRUSR | S_IWUSR);
   int n;
